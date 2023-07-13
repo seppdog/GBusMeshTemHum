@@ -1,5 +1,5 @@
-//SDA GPIO21
-//SCL GPIO22
+// SDA GPIO21
+// SCL GPIO22
 
 #include "Arduino.h"
 #include "GBusHelpers.h"
@@ -10,24 +10,28 @@
 #include "Adafruit_HTU21DF.h"
 #include <ArduinoJson.h>
 
-#define FWVERSION "1.1"
+#define FWVERSION "1.3"
 #define MODULNAME "GBusTempHum"
-#define LogLevel ESP_LOG_NONE
+#define LogLevel ESP_LOG_INFO
 
-#define GetTempHumIntervall (5*60*1000)
+#define GetTempHumIntervall (5 * 60 * 1000)
 
-MeshApp mesh;
+MeshApp GBusMesh;
 Tasker tasker;
 
 Adafruit_HTU21DF htu = Adafruit_HTU21DF();
 
+bool NewMeshMessage = false;
+String LastMeshMessage;
+uint8_t LastSrcMac[6];
+void LastmeshMessage(String msg, uint8_t SrcMac[6]);
+
 // Prototypes
-void meshMessage(String msg, uint32_t from, int flag);
+void meshMessage(String msg, uint8_t SrcMac[6]);
 void SentNodeInfo();
 void RootNotActiveWatchdog();
 void meshConnected();
 void ReadTempHum();
-
 
 uint8_t ModulType = 255;
 
@@ -42,11 +46,9 @@ void setup()
 
   MDF_LOGI("ModuleType: %u\n", ModulType);
 
-  pinMode(2,OUTPUT);
-  digitalWrite(2,HIGH);
-  mesh.onMessage(meshMessage);
-  mesh.onConnected(meshConnected);
-  mesh.start(false);
+  GBusMesh.onMessage(meshMessage);
+  GBusMesh.onConnected(meshConnected);
+  GBusMesh.start(false);
 
   if (!htu.begin())
   {
@@ -59,7 +61,15 @@ void setup()
 
 void loop()
 {
+  GBusMesh.Task();
   tasker.loop();
+  
+  if (NewMeshMessage)
+  {
+    NewMeshMessage = false;
+    LastmeshMessage(LastMeshMessage, LastSrcMac);
+  }
+
 }
 
 void ReadTempHum()
@@ -76,7 +86,7 @@ void ReadTempHum()
   String TempHumJsonString;
   serializeJson(TempHumJson, TempHumJsonString);
   String Msg = "MQTT values " + TempHumJsonString;
-  mesh.SendMessage(Msg);
+  GBusMesh.SendMessage(Msg);
   tasker.setTimeout(ReadTempHum, GetTempHumIntervall);
 }
 
@@ -91,18 +101,24 @@ void SentNodeInfo()
   esp_err_t err = esp_mesh_get_parent_bssid(&bssid);
 
   char MsgBuffer[300];
-  sprintf(MsgBuffer, "MQTT Info ModulName:%s,NodeID:%u,SubType:%u,MAC:%s,WifiStrength:%d,Parent:%s,FW:%s", MODULNAME, mesh.GetNodeId(), ModulType, WiFi.macAddress().c_str(), getWifiStrength(3), hextab_to_string(bssid.addr).c_str(), FWVERSION);
+  sprintf(MsgBuffer, "MQTT Info ModulName:%s,SubType:%u,MAC:%s,WifiStrength:%d,Parent:%s,FW:%s,Reset:%u,%u", MODULNAME, ModulType, WiFi.macAddress().c_str(), getWifiStrength(3), hextab_to_string(bssid.addr).c_str(), FWVERSION, rtc_get_reset_reason(0), rtc_get_reset_reason(0));
   String Msg = String(MsgBuffer);
-  mesh.SendMessage(Msg);
+  GBusMesh.SendMessage(Msg);
 }
 
 void meshConnected()
 {
-  digitalWrite(2, LOW);
   SentNodeInfo();
 }
 
-void meshMessage(String msg, uint32_t from, int flag)
+void meshMessage(String msg, uint8_t SrcMac[6])
+{
+  LastMeshMessage = msg;
+  memcpy(LastSrcMac, SrcMac, sizeof(LastSrcMac));
+  NewMeshMessage = true;
+}
+
+void LastmeshMessage(String msg, uint8_t SrcMac[6])
 {
   MDF_LOGD("meshMessage msg %u: %s", msg.length(), msg.c_str());
 
@@ -113,7 +129,6 @@ void meshMessage(String msg, uint32_t from, int flag)
 
   if (Type == "Output")
   {
-    
   }
   else if (msg.startsWith("I'm Root!"))
   {
